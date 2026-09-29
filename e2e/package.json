@@ -1,0 +1,17 @@
+{
+  "name": "@nexora/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:e2e": "tsx src/criticalFlow.ts",
+    "typecheck": "tsc --noEmit",
+    "test:browser": "playwright test"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "tsx": "^4.19.1",
+    "@types/node": "^22.7.4",
+    "@playwright/test": "^1.56.0"
+  }
+}

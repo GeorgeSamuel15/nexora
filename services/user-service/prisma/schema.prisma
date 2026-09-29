@@ -1,0 +1,62 @@
+// User Service database. Owns employee PROFILE data only - not
+// credentials (auth-service) and not departments/teams/organizations
+// (organization-service). departmentId/teamId are opaque references to
+// organization-service's records (no cross-database FK); userId is an
+// opaque reference to auth-service's User.id.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("USER_SERVICE_DATABASE_URL")
+}
+
+enum EmploymentType {
+  FULL_TIME
+  PART_TIME
+  CONTRACT
+  INTERN
+}
+
+enum EmploymentStatus {
+  ACTIVE
+  ON_LEAVE
+  TERMINATED
+}
+
+model Employee {
+  id               String           @id @default(uuid())
+  organizationId   String
+  // Opaque reference to auth-service's User.id - null until someone with
+  // an account is linked (see src/services/employee.service.ts).
+  userId           String?
+  employeeNumber   String
+  firstName        String
+  lastName         String
+  email            String
+  phone            String?
+  jobTitle         String?
+  // Opaque references to organization-service's Department/Team ids.
+  departmentId     String?
+  teamId           String?
+  managerId        String?
+  manager          Employee?        @relation("EmployeeManager", fields: [managerId], references: [id], onDelete: SetNull)
+  directReports    Employee[]       @relation("EmployeeManager")
+  employmentType   EmploymentType   @default(FULL_TIME)
+  employmentStatus EmploymentStatus @default(ACTIVE)
+  hireDate         DateTime
+  location         String?
+  avatarUrl        String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@unique([organizationId, employeeNumber])
+  @@index([organizationId])
+  @@index([organizationId, departmentId])
+  @@index([organizationId, teamId])
+  @@index([organizationId, employmentStatus])
+  @@map("employees")
+}

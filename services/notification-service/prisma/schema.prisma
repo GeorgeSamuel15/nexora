@@ -1,0 +1,53 @@
+// Notification Service database. Owns notifications only - created
+// exclusively by the RabbitMQ event consumer (src/consumer.ts), never
+// via a public "create notification" HTTP endpoint. userId is an opaque
+// reference to auth-service's userId (the recipient).
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("NOTIFICATION_SERVICE_DATABASE_URL")
+}
+
+model Notification {
+  deliveryKey String? @unique
+  id             String    @id @default(uuid())
+  organizationId String
+  userId         String
+  type           String
+  title          String
+  body           String
+  metadata       Json      @default("{}")
+  isRead         Boolean   @default(false)
+  readAt         DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([organizationId, userId])
+  @@index([organizationId, userId, isRead])
+  @@map("notifications")
+}
+
+model EmailDelivery {
+  id String @id @default(uuid())
+  payload String
+  status String @default("PENDING")
+  attempts Int @default(0)
+  availableAt DateTime @default(now())
+  sentAt DateTime?
+  createdAt DateTime @default(now())
+  @@index([status, availableAt])
+  @@map("email_deliveries")
+}
+
+model NotificationPreference {
+  id String @id @default(uuid())
+  organizationId String
+  userId String
+  inApp Boolean @default(true)
+  @@unique([organizationId, userId])
+  @@map("notification_preferences")
+}

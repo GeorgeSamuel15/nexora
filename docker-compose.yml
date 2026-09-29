@@ -1,0 +1,586 @@
+# Full Nexora stack: infrastructure + all 11 application services.
+#
+# Docker has not been executed in this repair run; see docs/VERIFICATION.md.
+#
+# Infra only (much faster, and all that's needed for local `pnpm dev`):
+#   docker compose up -d postgres rabbitmq redis
+# Everything:
+#   docker compose up --build
+name: nexora
+
+networks:
+  nexora-network:
+    driver: bridge
+
+volumes:
+  nexora-event-outbox:
+  nexora-document-storage:
+  nexora-postgres-data:
+  nexora-rabbitmq-data:
+  nexora-redis-data:
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nexora-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nexora}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexora}
+      POSTGRES_DB: ${POSTGRES_DB:-nexora}
+      # Comma-separated list consumed by init-multiple-databases.sh -
+      # one database per service (database-per-service ownership model).
+      POSTGRES_MULTIPLE_DATABASES: >-
+        nexora_auth,nexora_organization,nexora_user,nexora_hr,
+        nexora_project,nexora_crm,nexora_finance,nexora_document,
+        nexora_notification,nexora_analytics,nexora_audit
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - nexora-postgres-data:/var/lib/postgresql/data
+      - ./infrastructure/docker/postgres/init-multiple-databases.sh:/docker-entrypoint-initdb.d/init-multiple-databases.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nexora} -d ${POSTGRES_DB:-nexora}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - nexora-network
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: nexora-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-nexora}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-nexora}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-nexora}
+    ports:
+      - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672" # AMQP
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672" # management UI
+    volumes:
+      - nexora-rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    networks:
+      - nexora-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: nexora-redis
+    restart: unless-stopped
+    command: >-
+      redis-server
+      --requirepass ${REDIS_PASSWORD:-nexora}
+      --appendonly yes
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - nexora-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-nexora}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks:
+      - nexora-network
+
+  # ---- gateway (single public entry point) -----------------------------
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: apps/api-gateway/Dockerfile
+    container_name: nexora-api-gateway
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
+      API_GATEWAY_PORT: 4000
+      AUTH_SERVICE_INTERNAL_URL: http://auth-service:4001
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-nexora}@redis:6379
+      AUTH_SERVICE_URL: http://auth-service:4001
+      ORGANIZATION_SERVICE_URL: http://organization-service:4002
+      USER_SERVICE_URL: http://user-service:4003
+      HR_SERVICE_URL: http://hr-service:4004
+      PROJECT_SERVICE_URL: http://project-service:4005
+      CRM_SERVICE_URL: http://crm-service:4006
+      FINANCE_SERVICE_URL: http://finance-service:4007
+      DOCUMENT_SERVICE_URL: http://document-service:4008
+      NOTIFICATION_SERVICE_URL: http://notification-service:4009
+      ANALYTICS_SERVICE_URL: http://analytics-service:4010
+      AUDIT_SERVICE_URL: http://audit-service:4011
+    ports:
+      - "127.0.0.1:4000:4000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://localhost:4000/health'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"',
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+    networks:
+      - nexora-network
+
+  # ---- application services -------------------------------------------
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: services/auth-service/Dockerfile
+    container_name: nexora-auth-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      NOTIFICATION_SERVICE_INTERNAL_URL: http://notification-service:4009
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+      AUTH_SERVICE_PORT: 4001
+      AUTH_SERVICE_DATABASE_URL: postgresql://${POSTGRES_USER:-nexora}:${POSTGRES_PASSWORD:-nexora}@postgres:5432/nexora_auth
+      AUTH_SERVICE_INTERNAL_URL: http://auth-service:4001
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      JWT_ACCESS_TOKEN_TTL: ${JWT_ACCESS_TOKEN_TTL:-15m}
+      JWT_REFRESH_TOKEN_TTL: ${JWT_REFRESH_TOKEN_TTL:-30d}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-nexora}@redis:6379
+      ORGANIZATION_SERVICE_INTERNAL_URL: http://organization-service:4002
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      AUDIT_SERVICE_INTERNAL_URL: http://audit-service:4011
+    ports:
+      - "127.0.0.1:4001:4001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://localhost:4001/health'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"',
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - nexora-network
+
+  organization-service:
+    build:
+      context: .
+      dockerfile: services/organization-service/Dockerfile
+    container_name: nexora-organization-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      EVENT_OUTBOX_PATH: /event-outbox/organization
+      ORGANIZATION_SERVICE_INTERNAL_URL: http://organization-service:4002
+      NOTIFICATION_SERVICE_INTERNAL_URL: http://notification-service:4009
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+      ORGANIZATION_SERVICE_PORT: 4002
+      ORGANIZATION_SERVICE_DATABASE_URL: postgresql://${POSTGRES_USER:-nexora}:${POSTGRES_PASSWORD:-nexora}@postgres:5432/nexora_organization
+      AUTH_SERVICE_INTERNAL_URL: http://auth-service:4001
+      JWT_SECRET: ${JWT_SECRET}
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-nexora}:${RABBITMQ_PASSWORD:-nexora}@rabbitmq:5672/${RABBITMQ_VHOST:-nexora}
+      AUDIT_SERVICE_INTERNAL_URL: http://audit-service:4011
+    ports:
+      - "127.0.0.1:4002:4002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://localhost:4002/health'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"',
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - nexora-network
+
+    volumes:
+      - nexora-event-outbox:/event-outbox
+
+  user-service:
+    build:
+      context: .
+      dockerfile: services/user-service/Dockerfile
+    container_name: nexora-user-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      USER_SERVICE_PORT: 4003
+      USER_SERVICE_DATABASE_URL: postgresql://${POSTGRES_USER:-nexora}:${POSTGRES_PASSWORD:-nexora}@postgres:5432/nexora_user
+      AUTH_SERVICE_INTERNAL_URL: http://auth-service:4001
+      JWT_SECRET: ${JWT_SECRET}
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      AUDIT_SERVICE_INTERNAL_URL: http://audit-service:4011
+    ports:
+      - "127.0.0.1:4003:4003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://localhost:4003/health'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"',
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - nexora-network
+
+  hr-service:
+    build:
+      context: .
+      dockerfile: services/hr-service/Dockerfile
+    container_name: nexora-hr-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      EVENT_OUTBOX_PATH: /event-outbox/hr
+      ORGANIZATION_SERVICE_INTERNAL_URL: http://organization-service:4002
+      HR_SERVICE_PORT: 4004
+      HR_SERVICE_DATABASE_URL: postgresql://${POSTGRES_USER:-nexora}:${POSTGRES_PASSWORD:-nexora}@postgres:5432/nexora_hr
+      AUTH_SERVICE_INTERNAL_URL: http://auth-service:4001
+      JWT_SECRET: ${JWT_SECRET}
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-nexora}:${RABBITMQ_PASSWORD:-nexora}@rabbitmq:5672/${RABBITMQ_VHOST:-nexora}
+    ports:
+      - "127.0.0.1:4004:4004"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://localhost:4004/health'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"',
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - nexora-network
+
+    volumes:
+      - nexora-event-outbox:/event-outbox
+
+  project-service:
+    build:
+      context: .
+      dockerfile: services/project-service/Dockerfile
+    container_name: nexora-project-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      EVENT_OUTBOX_PATH: /event-outbox/project
+      ORGANIZATION_SERVICE_INTERNAL_URL: http://organization-service:4002
+      PROJECT_SERVICE_PORT: 4005
+      PROJECT_SERVICE_DATABASE_URL: postgresql://${POSTGRES_USER:-nexora}:${POSTGRES_PASSWORD:-nexora}@postgres:5432/nexora_project
+      AUTH_SERVICE_INTERNAL_URL: http://auth-service:4001
+      JWT_SECRET: ${JWT_SECRET}
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-nexora}:${RABBITMQ_PASSWORD:-nexora}@rabbitmq:5672/${RABBITMQ_VHOST:-nexora}
+    ports:
+      - "127.0.0.1:4005:4005"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://localhost:4005/health'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"',
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - nexora-network
+
+    volumes:
+      - nexora-event-outbox:/event-outbox
+
+  crm-service:
+    build:
+      context: .
+      dockerfile: services/crm-service/Dockerfile
+    container_name: nexora-crm-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      EVENT_OUTBOX_PATH: /event-outbox/crm
+      ORGANIZATION_SERVICE_INTERNAL_URL: http://organization-service:4002
+      CRM_SERVICE_PORT: 4006
+      CRM_SERVICE_DATABASE_URL: postgresql://${POSTGRES_USER:-nexora}:${POSTGRES_PASSWORD:-nexora}@postgres:5432/nexora_crm
+      AUTH_SERVICE_INTERNAL_URL: http://auth-service:4001
+      JWT_SECRET: ${JWT_SECRET}
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-nexora}:${RABBITMQ_PASSWORD:-nexora}@rabbitmq:5672/${RABBITMQ_VHOST:-nexora}
+    ports:
+      - "127.0.0.1:4006:4006"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://localhost:4006/health'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"',
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - nexora-network
+
+    volumes:
+      - nexora-event-outbox:/event-outbox
+
+  finance-service:
+    build:
+      context: .
+      dockerfile: services/finance-service/Dockerfile
+    container_name: nexora-finance-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      EVENT_OUTBOX_PATH: /event-outbox/finance
+      ORGANIZATION_SERVICE_INTERNAL_URL: http://organization-service:4002
+      FINANCE_SERVICE_PORT: 4007
+      FINANCE_SERVICE_DATABASE_URL: postgresql://${POSTGRES_USER:-nexora}:${POSTGRES_PASSWORD:-nexora}@postgres:5432/nexora_finance
+      AUTH_SERVICE_INTERNAL_URL: http://auth-service:4001
+      JWT_SECRET: ${JWT_SECRET}
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-nexora}:${RABBITMQ_PASSWORD:-nexora}@rabbitmq:5672/${RABBITMQ_VHOST:-nexora}
+    ports:
+      - "127.0.0.1:4007:4007"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://localhost:4007/health'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"',
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - nexora-network
+
+    volumes:
+      - nexora-event-outbox:/event-outbox
+
+  document-service:
+    build:
+      context: .
+      dockerfile: services/document-service/Dockerfile
+    container_name: nexora-document-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      EVENT_OUTBOX_PATH: /event-outbox/document
+      ORGANIZATION_SERVICE_INTERNAL_URL: http://organization-service:4002
+      DOCUMENT_SERVICE_PORT: 4008
+      DOCUMENT_SERVICE_DATABASE_URL: postgresql://${POSTGRES_USER:-nexora}:${POSTGRES_PASSWORD:-nexora}@postgres:5432/nexora_document
+      AUTH_SERVICE_INTERNAL_URL: http://auth-service:4001
+      JWT_SECRET: ${JWT_SECRET}
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-nexora}:${RABBITMQ_PASSWORD:-nexora}@rabbitmq:5672/${RABBITMQ_VHOST:-nexora}
+      AUDIT_SERVICE_INTERNAL_URL: http://audit-service:4011
+      DOCUMENT_STORAGE_DRIVER: local
+      DOCUMENT_STORAGE_LOCAL_PATH: /repo/services/document-service/storage/documents
+      DOCUMENT_MAX_UPLOAD_SIZE_MB: ${DOCUMENT_MAX_UPLOAD_SIZE_MB:-25}
+    ports:
+      - "127.0.0.1:4008:4008"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - nexora-event-outbox:/event-outbox
+      - nexora-document-storage:/repo/services/document-service/storage
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://localhost:4008/health'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"',
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - nexora-network
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: services/notification-service/Dockerfile
+    container_name: nexora-notification-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+      NOTIFICATION_SERVICE_PORT: 4009
+      NOTIFICATION_SERVICE_DATABASE_URL: postgresql://${POSTGRES_USER:-nexora}:${POSTGRES_PASSWORD:-nexora}@postgres:5432/nexora_notification
+      AUTH_SERVICE_INTERNAL_URL: http://auth-service:4001
+      JWT_SECRET: ${JWT_SECRET}
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-nexora}:${RABBITMQ_PASSWORD:-nexora}@rabbitmq:5672/${RABBITMQ_VHOST:-nexora}
+    ports:
+      - "127.0.0.1:4009:4009"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://localhost:4009/health'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"',
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - nexora-network
+
+  analytics-service:
+    build:
+      context: .
+      dockerfile: services/analytics-service/Dockerfile
+    container_name: nexora-analytics-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      ANALYTICS_SERVICE_PORT: 4010
+      AUTH_SERVICE_INTERNAL_URL: http://auth-service:4001
+      JWT_SECRET: ${JWT_SECRET}
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      USER_SERVICE_INTERNAL_URL: http://user-service:4003
+      HR_SERVICE_INTERNAL_URL: http://hr-service:4004
+      PROJECT_SERVICE_INTERNAL_URL: http://project-service:4005
+      CRM_SERVICE_INTERNAL_URL: http://crm-service:4006
+      FINANCE_SERVICE_INTERNAL_URL: http://finance-service:4007
+    ports:
+      - "127.0.0.1:4010:4010"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://localhost:4010/health'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"',
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - nexora-network
+
+  audit-service:
+    build:
+      context: .
+      dockerfile: services/audit-service/Dockerfile
+    container_name: nexora-audit-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      EVENT_OUTBOX_PATH: /event-outbox/audit
+      ORGANIZATION_SERVICE_INTERNAL_URL: http://organization-service:4002
+      AUDIT_SERVICE_PORT: 4011
+      AUDIT_SERVICE_DATABASE_URL: postgresql://${POSTGRES_USER:-nexora}:${POSTGRES_PASSWORD:-nexora}@postgres:5432/nexora_audit
+      AUTH_SERVICE_INTERNAL_URL: http://auth-service:4001
+      JWT_SECRET: ${JWT_SECRET}
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-nexora}:${RABBITMQ_PASSWORD:-nexora}@rabbitmq:5672/${RABBITMQ_VHOST:-nexora}
+    ports:
+      - "127.0.0.1:4011:4011"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://localhost:4011/health'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"',
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - nexora-network
+
+    volumes:
+      - nexora-event-outbox:/event-outbox
+
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports:
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
+    networks: [nexora-network]
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    ports: ["127.0.0.1:5173:8080"]
+    depends_on: [api-gateway]
+    networks: [nexora-network]

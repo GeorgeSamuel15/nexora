@@ -1,0 +1,17 @@
+node_modules
+dist
+build
+coverage
+.next
+.turbo
+.env
+.env.local
+*.log
+.DS_Store
+
+**/generated/
+.env.*
+!.env.example
+**/storage/
+playwright-report/
+test-results/

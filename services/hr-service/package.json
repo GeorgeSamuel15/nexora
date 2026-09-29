@@ -1,0 +1,47 @@
+{
+  "name": "@nexora/hr-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "prisma generate && tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "prisma generate && tsc --noEmit",
+    "lint": "eslint src tests --max-warnings=0",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:deploy": "prisma migrate deploy",
+    "prisma:studio": "prisma studio"
+  },
+  "dependencies": {
+    "@nexora/auth": "workspace:*",
+    "@nexora/config": "workspace:*",
+    "@nexora/database": "workspace:*",
+    "@nexora/events": "workspace:*",
+    "@nexora/http": "workspace:*",
+    "@nexora/logger": "workspace:*",
+    "@nexora/types": "workspace:*",
+    "@nexora/utils": "workspace:*",
+    "@nexora/validation": "workspace:*",
+    "@prisma/client": "^5.20.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "helmet": "^7.1.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "tsx": "^4.19.1",
+    "prisma": "^5.20.0",
+    "vitest": "^2.1.1",
+    "supertest": "^7.0.0",
+    "@types/express": "^4.17.21",
+    "@types/cors": "^2.8.17",
+    "@types/supertest": "^6.0.2",
+    "@types/node": "^22.7.4"
+  }
+}

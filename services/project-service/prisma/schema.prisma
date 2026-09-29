@@ -1,0 +1,122 @@
+// Project Service database. Owns projects, project membership, tasks,
+// task comments, and task activity history. ownerId/assigneeId/creatorId/
+// userId/authorId/actorId are opaque references to auth-service's
+// User.id - no cross-database FK.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("PROJECT_SERVICE_DATABASE_URL")
+}
+
+enum ProjectStatus {
+  PLANNING
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  ARCHIVED
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  IN_REVIEW
+  COMPLETED
+  CANCELLED
+}
+
+model Project {
+  id             String        @id @default(uuid())
+  organizationId String
+  name           String
+  description    String?
+  ownerId        String
+  status         ProjectStatus @default(PLANNING)
+  priority       Priority      @default(MEDIUM)
+  startDate      DateTime?     @db.Date
+  dueDate        DateTime?     @db.Date
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  members ProjectMember[]
+  tasks   Task[]
+
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@map("projects")
+}
+
+model ProjectMember {
+  id        String   @id @default(uuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId    String
+  addedAt   DateTime @default(now())
+
+  @@unique([projectId, userId])
+  @@index([projectId])
+  @@map("project_members")
+}
+
+model Task {
+  id             String     @id @default(uuid())
+  organizationId String
+  projectId      String
+  project        Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title          String
+  description    String?
+  assigneeId     String?
+  creatorId      String
+  priority       Priority   @default(MEDIUM)
+  status         TaskStatus @default(TODO)
+  dueDate        DateTime?  @db.Date
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  comments   TaskComment[]
+  activities TaskActivity[]
+
+  @@index([organizationId, projectId])
+  @@index([organizationId, assigneeId])
+  @@index([organizationId, status])
+  @@map("tasks")
+}
+
+model TaskComment {
+  id             String   @id @default(uuid())
+  organizationId String
+  taskId         String
+  task           Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  authorId       String
+  content        String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([taskId])
+  @@map("task_comments")
+}
+
+model TaskActivity {
+  id             String   @id @default(uuid())
+  organizationId String
+  taskId         String
+  task           Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  actorId        String
+  action         String
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now())
+
+  @@index([taskId])
+  @@map("task_activities")
+}

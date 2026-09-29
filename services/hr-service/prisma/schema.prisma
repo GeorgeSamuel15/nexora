@@ -1,0 +1,119 @@
+// HR Service database. Owns attendance, leave types, leave balances, and
+// leave requests. employeeId is an opaque reference to user-service's
+// Employee.id - no cross-database FK.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("HR_SERVICE_DATABASE_URL")
+}
+
+enum AttendanceStatus {
+  ACTIVE
+  COMPLETED
+}
+
+model AttendanceRecord {
+  id             String           @id @default(uuid())
+  organizationId String
+  employeeId     String
+  date           DateTime         @db.Date
+  clockInAt      DateTime
+  clockOutAt     DateTime?
+  totalMinutes   Int?
+  status         AttendanceStatus @default(ACTIVE)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([organizationId, employeeId])
+  @@index([organizationId, date])
+  @@map("attendance_records")
+}
+
+model LeaveType {
+  id               String   @id @default(uuid())
+  organizationId   String
+  name             String
+  // Whether this type draws down a tracked balance (Annual, Sick, ...) or
+  // is unlimited (Unpaid Leave) - decides whether requestLeave checks a
+  // LeaveBalance at all.
+  requiresBalance  Boolean  @default(true)
+  defaultAnnualDays Int?
+  isPaid           Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  balances LeaveBalance[]
+  requests LeaveRequest[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@map("leave_types")
+}
+
+model LeaveBalance {
+  id             String    @id @default(uuid())
+  organizationId String
+  employeeId     String
+  leaveTypeId    String
+  leaveType      LeaveType @relation(fields: [leaveTypeId], references: [id], onDelete: Cascade)
+  year           Int
+  allocatedDays  Float
+  usedDays       Float     @default(0)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([organizationId, employeeId, leaveTypeId, year])
+  @@index([organizationId, employeeId])
+  @@map("leave_balances")
+}
+
+enum LeaveRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+model LeaveRequest {
+  id               String             @id @default(uuid())
+  organizationId   String
+  employeeId       String
+  leaveTypeId      String
+  leaveType        LeaveType          @relation(fields: [leaveTypeId], references: [id], onDelete: Restrict)
+  startDate        DateTime           @db.Date
+  endDate          DateTime           @db.Date
+  durationDays     Float
+  reason           String
+  status           LeaveRequestStatus @default(PENDING)
+  reviewedBy       String?
+  reviewedAt       DateTime?
+  rejectionReason  String?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  @@index([organizationId, employeeId])
+  @@index([organizationId, status])
+  @@map("leave_requests")
+}
+
+model PerformanceReview {
+  id String @id @default(uuid())
+  organizationId String
+  employeeId String
+  reviewerId String
+  period String
+  rating Int
+  feedback String
+  goals String
+  status String @default("DRAFT")
+  submittedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([organizationId, employeeId])
+  @@map("performance_reviews")
+}

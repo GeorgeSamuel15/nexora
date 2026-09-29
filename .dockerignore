@@ -1,0 +1,14 @@
+**/node_modules
+**/dist
+**/generated
+**/.turbo
+**/coverage
+.git
+.env
+.env.*
+!.env.example
+**/storage
+*.zip
+**/storage
+playwright-report
+test-results

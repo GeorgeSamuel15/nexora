@@ -1,0 +1,112 @@
+// Finance Service database. Owns invoices/invoice items, expenses, and
+// payments. clientId is an opaque reference to crm-service's Client.id;
+// submittedBy/createdBy/reviewedBy are opaque references to
+// auth-service's User.id. No cross-database FKs.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("FINANCE_SERVICE_DATABASE_URL")
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+model Invoice {
+  id             String        @id @default(uuid())
+  organizationId String
+  invoiceNumber  String
+  clientId       String
+  issueDate      DateTime      @db.Date
+  dueDate        DateTime      @db.Date
+  status         InvoiceStatus @default(DRAFT)
+  subtotal       Decimal         @default(0) @db.Decimal(18, 2)
+  tax            Decimal         @default(0) @db.Decimal(18, 2)
+  total          Decimal         @default(0) @db.Decimal(18, 2)
+  currency       String        @default("USD")
+  notes          String?
+  createdBy      String
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  items    InvoiceItem[]
+  payments Payment[]
+
+  @@unique([organizationId, invoiceNumber])
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@map("invoices")
+}
+
+model InvoiceItem {
+  id          String   @id @default(uuid())
+  invoiceId   String
+  invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  description String
+  quantity    Decimal @db.Decimal(18, 3)
+  unitPrice   Decimal @db.Decimal(18, 2)
+  amount      Decimal @db.Decimal(18, 2)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([invoiceId])
+  @@map("invoice_items")
+}
+
+enum ExpenseStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model Expense {
+  currency String @default("USD")
+  id             String        @id @default(uuid())
+  organizationId String
+  title          String
+  category       String
+  amount         Decimal @db.Decimal(18, 2)
+  date           DateTime      @db.Date
+  description    String?
+  submittedBy    String
+  status         ExpenseStatus @default(PENDING)
+  reviewedBy     String?
+  reviewedAt     DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@map("expenses")
+}
+
+model Payment {
+  idempotencyKey String?
+  id             String   @id @default(uuid())
+  organizationId String
+  invoiceId      String
+  invoice        Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  amount         Decimal @db.Decimal(18, 2)
+  paymentDate    DateTime @db.Date
+  method         String
+  reference      String?
+  notes          String?
+  recordedBy     String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([organizationId, idempotencyKey])
+  @@index([invoiceId])
+  @@index([organizationId])
+  @@map("payments")
+}

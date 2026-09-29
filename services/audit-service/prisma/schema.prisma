@@ -1,0 +1,31 @@
+// Audit Service database. Owns audit log entries only. actorId is an
+// opaque reference to auth-service's userId. entityType/entityId is a
+// generic polymorphic reference to a record in any other service.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("AUDIT_SERVICE_DATABASE_URL")
+}
+
+model AuditLog {
+  id             String   @id @default(uuid())
+  organizationId String
+  actorId        String
+  action         String
+  entityType     String
+  entityId       String
+  ipAddress      String?
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now())
+
+  @@index([organizationId])
+  @@index([organizationId, entityType, entityId])
+  @@index([organizationId, actorId])
+  @@index([organizationId, action])
+  @@map("audit_logs")
+}

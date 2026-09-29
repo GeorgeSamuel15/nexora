@@ -1,0 +1,63 @@
+// Document Service database. Owns document METADATA only - the actual
+// file bytes live in the storage abstraction (src/storage/), never in
+// Postgres. uploadedBy is an opaque reference to auth-service's userId;
+// entityType/entityId is a generic polymorphic association (e.g.
+// entityType: "project", entityId: <project-service's Project.id>) with
+// no cross-database FK, since the referenced entity can live in any
+// other service.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DOCUMENT_SERVICE_DATABASE_URL")
+}
+
+model Document {
+  id             String   @id @default(uuid())
+  organizationId String
+  name           String
+  fileName       String
+  mimeType       String
+  size           Int
+  storageKey     String   @unique
+  uploadedBy     String
+  category       String?
+  entityType     String?
+  entityId       String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  shares DocumentShare[]
+
+  @@index([organizationId])
+  @@index([organizationId, category])
+  @@index([organizationId, entityType, entityId])
+  @@map("documents")
+}
+
+// 
+// Records that a document was explicitly shared with someone - an audit
+// trail of who was notified, NOT an access-control gate. Document access
+// is already org-wide via the document.read permission (see
+// document.routes.ts); this table doesn't restrict or grant anything by
+// itself. A real per-document ACL system (private-by-default documents
+// visible only to the uploader + explicit shares) would be a much larger
+// feature than this phase's scope - see README.
+// 
+model DocumentShare {
+  id             String   @id @default(uuid())
+  organizationId String
+  documentId     String
+  document       Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  sharedBy       String
+  sharedWith     String
+  createdAt      DateTime @default(now())
+
+  @@unique([documentId, sharedWith])
+  @@index([organizationId, sharedWith])
+  @@map("document_shares")
+}

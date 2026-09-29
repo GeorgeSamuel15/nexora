@@ -1,0 +1,154 @@
+// CRM Service database. Owns leads, clients/contacts, sales pipelines,
+// and deals. ownerId/actorId are opaque references to auth-service's
+// User.id - no cross-database FK.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("CRM_SERVICE_DATABASE_URL")
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  UNQUALIFIED
+  CONVERTED
+}
+
+model Lead {
+  id                String     @id @default(uuid())
+  organizationId    String
+  name              String
+  company           String?
+  email             String?
+  phone             String?
+  source            String?
+  status            LeadStatus @default(NEW)
+  ownerId           String
+  notes             String?
+  convertedClientId String?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@map("leads")
+}
+
+model Client {
+  id             String    @id @default(uuid())
+  organizationId String
+  name           String
+  company        String?
+  email          String?
+  phone          String?
+  notes          String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  contacts Contact[]
+  deals    Deal[]
+
+  @@index([organizationId])
+  @@map("clients")
+}
+
+model Contact {
+  id             String   @id @default(uuid())
+  organizationId String
+  clientId       String
+  client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  name           String
+  email          String?
+  phone          String?
+  jobTitle       String?
+  isPrimary      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([clientId])
+  @@map("contacts")
+}
+
+model Pipeline {
+  id             String   @id @default(uuid())
+  organizationId String
+  name           String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  stages PipelineStage[]
+  deals  Deal[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@map("pipelines")
+}
+
+model PipelineStage {
+  id         String   @id @default(uuid())
+  pipelineId String
+  pipeline   Pipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  name       String
+  order      Int
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  deals Deal[]
+
+  @@unique([pipelineId, name])
+  @@index([pipelineId])
+  @@map("pipeline_stages")
+}
+
+enum DealStatus {
+  OPEN
+  WON
+  LOST
+}
+
+model Deal {
+  id                String     @id @default(uuid())
+  organizationId    String
+  title             String
+  clientId          String
+  client            Client     @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  ownerId           String
+  pipelineId        String
+  pipeline          Pipeline   @relation(fields: [pipelineId], references: [id], onDelete: Restrict)
+  stageId           String
+  stage             PipelineStage @relation(fields: [stageId], references: [id], onDelete: Restrict)
+  value             Float
+  status            DealStatus @default(OPEN)
+  expectedCloseDate DateTime?  @db.Date
+  probability       Int        @default(50)
+  notes             String?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  activities DealActivity[]
+
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@index([organizationId, pipelineId, stageId])
+  @@map("deals")
+}
+
+model DealActivity {
+  id             String   @id @default(uuid())
+  organizationId String
+  dealId         String
+  deal           Deal     @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  actorId        String
+  action         String
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now())
+
+  @@index([dealId])
+  @@map("deal_activities")
+}
